@@ -1,0 +1,79 @@
+monitors:
+ - title: "Daily alert - Transactions above $300"
+   sql: >
+    SELECT * FROM transactions 
+    WHERE CAST(transaction_amount AS FLOAT)<-300
+    and date(transaction_date)= date(?,'-1 day') ;
+   frequency : "daily"
+   alert_channel : "jira"
+   notify : "fraud_team@gmail.com"
+
+ - title: "Monthly Email Alert - Spending Deviation"
+   sql: >
+    WITH monthly_totals AS (
+        SELECT account_id, strftime('%Y-%m', transaction_date) as month,
+          SUM(CAST(transaction_amount AS FLOAT)) as monthly_spend
+        FROM transactions
+        group by account_id, month
+      ),
+    account_average AS (
+        SELECT account_id, AVG(monthly_spend) as average_spend
+        FROM monthly_totals
+        WHERE month<strftime('%Y-%m', date(?,'-1 month'))
+        GROUP BY account_id
+      )
+    SELECT t.account_id, SUM(CAST(t.transaction_amount AS FLOAT)) as total_spend, a.average_spend
+      FROM transactions t
+      JOIN account_average a ON t.account_id=a.account_id
+      WHERE strftime('%Y-%m', t.transaction_date)=strftime('%Y-%m', date(?,'-1 month'))
+      GROUP BY t.account_id
+      HAVING total_spend <= 2*a.average_spend ;
+   frequency: "monthly"
+   alert_channel: "email"
+   notify: "fraud_team@gmail.com"
+
+ - title : "Slack notifications - Accounts spent more than 500$"
+   sql: >
+    WITH today_spending AS (
+    SELECT 
+        customer_id,
+        account_id,
+        SUM(transaction_amount) as total_spend
+    FROM 
+        transactions
+    WHERE 
+        transaction_date >= date(?, 'start of month')
+        AND transaction_date <= ?
+    GROUP BY 
+        customer_id, account_id
+    ),
+    yesterday_spending AS (
+    SELECT 
+        customer_id,
+        account_id, 
+        SUM(transaction_amount) as total_spend
+    FROM 
+        transactions
+    WHERE 
+        transaction_date >= date(?, 'start of month')
+        AND transaction_date <= date(?, '-1 day')
+    GROUP BY 
+        customer_id, account_id
+    )
+    SELECT DISTINCT
+    t.customer_id,
+    t.account_id, 
+    t.total_spend
+    FROM 
+    today_spending t
+    LEFT JOIN 
+    yesterday_spending y ON t.account_id = y.account_id AND t.customer_id = y.customer_id
+    WHERE 
+    t.total_spend < -500
+    AND (y.total_spend IS NULL OR y.total_spend >= -500)
+    ORDER BY 
+    t.total_spend DESC;
+   frequency: "daily"
+   alert_channel: "slack"
+   notify: "#fraud-team"
+ 
